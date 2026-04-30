@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Adsolut Metadata Explorer</title>
+    <style>
+        :root {
+            --bg: #0f1115; --surface: #1c1f26; --surface-hover: #252933;
+            --border: #2d323e; --text: #e4e6eb; --text-muted: #9ca3af;
+            --primary: #3b82f6; --primary-hover: #60a5fa;
+            --radius: 6px; --shadow: 0 2px 6px rgba(0,0,0,0.4);
+        }
+        * { box-sizing: border-box; outline: none; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 0; height: 100vh; display: flex; }
+        
+        /* Sidebar */
+        .sidebar { width: 260px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; }
+        .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); }
+        .sidebar-header h2 { margin: 0; font-size: 1.1em; color: var(--primary); }
+        .table-list { flex: 1; overflow-y: auto; padding: 8px; }
+        .table-item { padding: 8px 12px; margin: 2px 0; border-radius: var(--radius); cursor: pointer; font-size: 0.9em; transition: 0.2s; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .table-item:hover { background: var(--surface-hover); color: var(--primary-hover); }
+        .table-item.active { background: var(--primary); color: #ffffff; font-weight: 500; }
+
+        /* Main Area */
+        .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+        .toolbar { padding: 16px 20px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; gap: 12px; align-items: center; }
+        .breadcrumbs { font-size: 1.1em; font-weight: 600; color: var(--text); display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; }
+        .breadcrumb-link { color: var(--text-muted); cursor: pointer; transition: 0.2s; }
+        .breadcrumb-link:hover { color: var(--primary-hover); text-decoration: underline; }
+        .search-input { flex: 1; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); font-size: 0.95em; transition: 0.2s; }
+        .search-input::placeholder { color: var(--text-muted); }
+        .search-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,130,246,0.25); }
+
+        /* Content & Fields */
+        .content { flex: 1; overflow-y: auto; padding: 20px; }
+        .field-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; box-shadow: var(--shadow); transition: 0.2s; }
+        .field-card:hover { border-color: var(--primary); transform: translateY(-1px); }
+        .field-info { display: flex; flex-direction: column; }
+        .field-name { font-family: ui-monospace, "Fira Code", Consolas, monospace; font-size: 0.95em; font-weight: 500; color: var(--text); }
+        .field-nl { color: var(--primary-hover); font-weight: 600; margin-top: 2px; }
+        .rel-action { background: var(--primary); color: white; border: none; padding: 6px 12px; border-radius: var(--radius); font-size: 0.85em; cursor: pointer; transition: 0.2s; display: flex; align-items: center; gap: 4px; }
+        .rel-action:hover { background: var(--primary-hover); }
+        
+        .empty-state { text-align: center; color: var(--text-muted); margin-top: 40px; }
+        .loader { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+        .loader::after { content: ''; display: block; width: 24px; height: 24px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; margin: 16px auto 0; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #4b5563; }
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <div class="sidebar-header">
+        <h2>📁 Tables</h2>
+    </div>
+    <div class="table-list" id="tableList"></div>
+</div>
+
+<div class="main">
+    <div class="toolbar">
+        <div class="breadcrumbs" id="breadcrumbs"></div>
+        <input type="text" class="search-input" id="searchInput" placeholder="🔍 Search fields by name or Dutch label (NL)...">
+    </div>
+    <div class="content" id="fieldContainer">
+        <div class="loader">Loading Adsolut metadata...</div>
+    </div>
+</div>
+
+<script>
+    const DB = { tables: {}, relations: [], tableNames: [] };
+    let state = { currentTable: null, breadcrumbs: [] };
+
+    const tableList = document.getElementById('tableList');
+    const breadcrumbs = document.getElementById('breadcrumbs');
+    const fieldContainer = document.getElementById('fieldContainer');
+    const searchInput = document.getElementById('searchInput');
+
+    // Auto-load on startup
+    async function init() {
+        try {
+            const response = await fetch('all_metadata.xml');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const text = await response.text();
+            parseXML(text);
+            renderTableList();
+            // Default to 'relaties' if it exists, otherwise first table
+            const startTable = DB.tableNames.find(t => t === 'relaties') || DB.tableNames[0];
+            navigateTo(startTable);
+        } catch (err) {
+            fieldContainer.innerHTML = `
+                <div class="empty-state">
+                    ❌ Failed to load <code>all_metadata.xml</code><br>
+                    <small style="color:var(--text-muted)">If testing locally, browsers block fetch() on file://. Use a local server or GitHub Pages.</small>
+                </div>`;
+        }
+    }
+
+    function parseXML(xmlText) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(xmlText, "text/xml");
+        const fps = doc.getElementsByTagName('fieldproperties');
+        
+        for (let i = 0; i < fps.length; i++) {
+            const table = fps[i].getElementsByTagName('tableproperties_tablename')[0]?.textContent;
+            const field = fps[i].getElementsByTagName('fieldname')[0]?.textContent;
+            const nl = fps[i].getElementsByTagName('nl')[0]?.textContent || '';
+            
+            if (table && field) {
+                if (!DB.tables[table]) DB.tables[table] = { fields: [] };
+                DB.tables[table].fields.push({ name: field, nl: nl });
+            }
+        }
+
+        // Detect relationships via Adsolut naming convention: RELATEDTABLENAME_FIELD
+        DB.tableNames = Object.keys(DB.tables).sort();
+        const sortedTables = [...DB.tableNames].sort((a,b) => b.length - a.length);
+        
+        for (let table of DB.tableNames) {
+            for (let f of DB.tables[table].fields) {
+                for (let target of sortedTables) {
+                    if (target === table) continue;
+                    const prefix = target + '_';
+                    if (f.name.startsWith(prefix)) {
+                        const potentialField = f.name.slice(prefix.length);
+                        if (DB.tables[target] && DB.tables[target].fields.some(tf => tf.name === potentialField)) {
+                            f.relTarget = target;
+                            f.relField = potentialField;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    function renderTableList() {
+        tableList.innerHTML = '';
+        DB.tableNames.forEach(name => {
+            const div = document.createElement('div');
+            div.className = 'table-item';
+            div.textContent = name;
+            if (name === state.currentTable) div.classList.add('active');
+            div.onclick = () => { state.breadcrumbs = []; navigateTo(name); };
+            tableList.appendChild(div);
+        });
+    }
+
+    function navigateTo(tableName) {
+        state.currentTable = tableName;
+        state.breadcrumbs.push(tableName);
+        searchInput.value = '';
+        renderTableList();
+        renderBreadcrumbs();
+        renderFields();
+    }
+
+    function renderBreadcrumbs() {
+        breadcrumbs.innerHTML = '';
+        state.breadcrumbs.forEach((name, index) => {
+            const span = document.createElement('span');
+            if (index > 0) {
+                const sep = document.createElement('span');
+                sep.textContent = '›';
+                sep.style.color = '#4b5563';
+                breadcrumbs.appendChild(sep);
+            }
+            span.textContent = name;
+            if (index === state.breadcrumbs.length - 1) {
+                span.style.color = 'var(--text)';
+                span.style.cursor = 'default';
+            } else {
+                span.className = 'breadcrumb-link';
+                span.onclick = () => {
+                    state.breadcrumbs = state.breadcrumbs.slice(0, index + 1);
+                    state.currentTable = name;
+                    renderBreadcrumbs();
+                    renderFields();
+                    renderTableList();
+                };
+            }
+            breadcrumbs.appendChild(span);
+        });
+    }
+
+    function renderFields() {
+        fieldContainer.innerHTML = '';
+        const tableData = DB.tables[state.currentTable];
+        if (!tableData) return;
+
+        const query = searchInput.value.toLowerCase();
+        const filtered = tableData.fields.filter(f => 
+            f.name.toLowerCase().includes(query) || f.nl.toLowerCase().includes(query)
+        );
+
+        if (filtered.length === 0) {
+            fieldContainer.innerHTML = '<div class="empty-state">No fields match your search.</div>';
+            return;
+        }
+
+        filtered.forEach(f => {
+            const card = document.createElement('div');
+            card.className = 'field-card';
+            
+            const info = document.createElement('div');
+            info.className = 'field-info';
+            
+            const nameEl = document.createElement('div');
+            nameEl.className = 'field-name';
+            nameEl.textContent = f.name;
+            
+            const nlEl = document.createElement('div');
+            nlEl.className = 'field-nl';
+            nlEl.textContent = f.nl || '—';
+            
+            info.appendChild(nameEl);
+            info.appendChild(nlEl);
+
+            if (f.relTarget) {
+                const btn = document.createElement('button');
+                btn.className = 'rel-action';
+                btn.innerHTML = `🔗 Open ${f.relTarget}`;
+                btn.onclick = () => navigateTo(f.relTarget);
+                card.appendChild(info);
+                card.appendChild(btn);
+            } else {
+                card.appendChild(info);
+            }
+            fieldContainer.appendChild(card);
+        });
+    }
+
+    searchInput.addEventListener('input', renderFields);
+    init();
+</script>
+
+</body>
+</html>
